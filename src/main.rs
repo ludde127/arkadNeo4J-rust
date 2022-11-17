@@ -8,7 +8,6 @@ use std::fs::{File, read};
 use std::hash::Hasher;
 use std::io;
 use std::io::Read;
-use std::os::linux::raw::stat;
 use serde_json::json;
 
 fn setup_logger() {
@@ -21,6 +20,11 @@ fn setup_logger() {
 
     tracing::subscriber::set_global_default(subscriber)
         .expect("setting default subscriber failed");
+}
+
+struct Results {
+    total: f64,
+    cost: f64,
 }
 
 struct Node {
@@ -41,7 +45,7 @@ impl Node {
     }
 
     fn value_per_cost(&self) -> f64 {
-        (self.cost as f64)/(self.value as f64)
+        (self.value as f64)/(self.cost as f64)
     }
 }
 
@@ -61,28 +65,41 @@ impl Path {
     }
 
     fn max_value_per_cost_depth(&self, depth: i64, nodes: &HashMap<String, Node>,
-                                relationships: &Relationships, visited: &HashSet<String>) -> i64 {
-        self.rec_max_value_per_cost_depth(depth, nodes, relationships, visited, 0)
+                                relationships: &Relationships, visited: &HashSet<String>) -> f64 {
+        let results = self.rec_max_value_per_cost_depth(depth, nodes, relationships, &mut visited.clone(), 0.0, 0.0);
+        results.total/results.cost
     }
 
     fn rec_max_value_per_cost_depth(&self, depth: i64, nodes: &HashMap<String, Node>,
-                                    relationships: &Relationships, visited: &HashSet<String>, total_so_far: i64) -> i64 {
-        let mut vals: Vec<i64> = vec![];
+                                    relationships: &Relationships, visited: &mut HashSet<String>, total_so_far: f64, divide_by: f64) -> Results {
+        let mut vals: Vec<Results> = vec![];
+        let temp_node = nodes.get(&self.to).unwrap();
+
         if !visited.contains(&self.to) {
-            vals.push(self.value_per_cost(nodes) as i64);
+            vals.push(Results{total: temp_node.value as f64,cost: temp_node.cost as f64});
+            visited.insert(self.to.clone());
         } else {
-            vals.push(0)
+            vals.push(Results{total: 0.0, cost: 0.0}) // BAD
         }
         if depth == 0 {
-            total_so_far + vals.get(0).unwrap().clone()
+            Results{ total: total_so_far, cost: divide_by }
         } else {
             for rel in relationships.get(&self.to) {
-                for path in &rel.paths {
+                for path in rel.paths.iter() {
+                    let mut local_visited = visited.clone();
+                    //local_visited.insert(path.to.clone());
                     vals.push(path.rec_max_value_per_cost_depth(depth -1,
-                                                                nodes, relationships, visited, total_so_far));
+                                                                nodes, relationships, &mut local_visited, total_so_far, total_so_far + path.cost as f64));
                 }
             }
-            total_so_far + vals.iter().max().unwrap().clone()
+
+            let mut tot_sum = 0.0;
+            let mut cost_sum = 0.0;
+            for r in vals {
+                tot_sum += r.total;
+                cost_sum += r.cost
+            }
+            Results{total: tot_sum, cost: cost_sum}
         }
     }
 }
@@ -150,6 +167,7 @@ impl State {
     
     fn goto(&mut self, path_followed: &Path, nodes: &HashMap<String, Node>) {
         let collected_at_current = self.should_collect(&nodes);
+
         self.last_companies.push(
             Action{ company: self.current_company.clone(),
                 collected: collected_at_current });
@@ -172,31 +190,42 @@ impl State {
     }
 
     fn collect(&mut self, relations: &Relationships, nodes: &HashMap<String, Node>) {
-        let mut max = 0;
-        let mut max_index = 0;
-        let mut index = 0;
+
         let hashset_visited: HashSet<String> = self.last_companies.iter().
             filter(|a| !a.collected).map(|a| a.company.clone()).collect();
         while self.time_left > 0 {
+            let mut max = 0.0;
+            let mut max_index = 0;
+            let mut index = 0;
+            let mut last_comp_names: HashSet<&String> = self.last_companies.iter().map(|c| &c.company).collect();
+
             for path in &relations[&self.current_company].paths {
-                let temp = path.max_value_per_cost_depth(8, &nodes, &relations, &hashset_visited);
-                if temp > max {
+                last_comp_names.insert(&self.current_company);
+                let temp = path.max_value_per_cost_depth(9, &nodes, &relations, &hashset_visited);
+
+                if temp > max && !last_comp_names.contains(&path.to){
                     max = temp;
                     max_index = index;
                 }
                 index += 1;
-            }
 
-            self.goto(&relations[&self.current_company].paths.get(max_index).unwrap(), &nodes);
+            }
+            let best_path = &relations[&self.current_company].paths.get(max_index).unwrap();
+
+            println!("{}",self.current_company == best_path.to );
+
+            self.goto(best_path, &nodes);
             println!("{}", self);
         }
     }
 
     fn should_collect(&self, nodes: &HashMap<String, Node>) -> bool {
+        let node = nodes.get(&self.current_company).unwrap();
+        let collect_worth = node.value_per_cost();
+        println!("{}", collect_worth);
         !self.last_companies.contains(
             &Action::new(self.current_company.clone(), true)
-        )
-            && nodes.get(&self.current_company).unwrap().value_per_cost() > 0.3
+        ) && collect_worth > 0.70
     }
 }
 
