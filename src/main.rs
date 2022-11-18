@@ -65,13 +65,17 @@ impl Path {
     }
 
     fn max_value_per_cost_depth(&self, depth: i64, nodes: &HashMap<String, Node>,
-                                relationships: &Relationships, visited: &HashSet<String>) -> f64 {
-        let results = self.rec_max_value_per_cost_depth(depth, nodes, relationships, &mut visited.clone(), 0.0, 0.0);
+                                relationships: &Relationships, visited: &HashSet<String>, ttl: u8) -> f64 {
+        let results = self.rec_max_value_per_cost_depth(depth, nodes, relationships,
+                                                        &mut visited.clone(),
+                                                        0.0, 0.0, ttl);
         results.total/results.cost
     }
 
     fn rec_max_value_per_cost_depth(&self, depth: i64, nodes: &HashMap<String, Node>,
-                                    relationships: &Relationships, visited: &mut HashSet<String>, total_so_far: f64, divide_by: f64) -> Results {
+                                    relationships: &Relationships, visited: &mut HashSet<String>,
+                                    total_so_far: f64, divide_by: f64, mut ttl:u8) -> Results {
+
         let mut vals: Vec<Results> = vec![];
         let temp_node = nodes.get(&self.to).unwrap();
 
@@ -79,17 +83,21 @@ impl Path {
             vals.push(Results{total: temp_node.value as f64,cost: temp_node.cost as f64});
             visited.insert(self.to.clone());
         } else {
-            vals.push(Results{total: 0.0, cost: 0.0}) // BAD
+            //vals.push(Results{total: 0.0, cost: 10.0}); // BAD
+            ttl-=1;
         }
-        if depth == 0 {
+        if depth == 0 || ttl == 0 {
             Results{ total: total_so_far, cost: divide_by }
         } else {
             for rel in relationships.get(&self.to) {
                 for path in rel.paths.iter() {
                     let mut local_visited = visited.clone();
                     //local_visited.insert(path.to.clone());
-                    vals.push(path.rec_max_value_per_cost_depth(depth -1,
-                                                                nodes, relationships, &mut local_visited, total_so_far, total_so_far + path.cost as f64));
+                    vals.push(path.rec_max_value_per_cost_depth(depth.clone() -1,
+                                                                nodes, relationships,
+                                                                &mut local_visited,
+                                                                total_so_far.clone(),
+                                                                &divide_by + path.cost as f64, ttl.clone()));
                 }
             }
 
@@ -193,15 +201,18 @@ impl State {
 
         let hashset_visited: HashSet<String> = self.last_companies.iter().
             filter(|a| !a.collected).map(|a| a.company.clone()).collect();
+        let mut ttl: u8 = 1;
         while self.time_left > 0 {
             let mut max = 0.0;
             let mut max_index = 0;
             let mut index = 0;
-            let mut last_comp_names: HashSet<&String> = self.last_companies.iter().map(|c| &c.company).collect();
 
+            let mut last_comp_names: HashSet<&String> = self.last_companies.iter().map(|c| &c.company).collect();
+            //last_comp_names.iter().for_each(|c| print!("{} ", c));
             for path in &relations[&self.current_company].paths {
                 last_comp_names.insert(&self.current_company);
-                let temp = path.max_value_per_cost_depth(9, &nodes, &relations, &hashset_visited);
+                let temp = path.max_value_per_cost_depth(9, &nodes, &relations, &hashset_visited, ttl);
+                println!("{}: {}", path.to, temp);
 
                 if temp > max && !last_comp_names.contains(&path.to){
                     max = temp;
@@ -212,6 +223,9 @@ impl State {
             }
             let best_path = &relations[&self.current_company].paths.get(max_index).unwrap();
 
+            if last_comp_names.contains(&best_path.to) {
+                ttl-=1;
+            }
             println!("{}",self.current_company == best_path.to );
 
             self.goto(best_path, &nodes);
