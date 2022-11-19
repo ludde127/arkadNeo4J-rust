@@ -49,6 +49,12 @@ impl Node {
     }
 }
 
+impl Clone for Node {
+    fn clone(&self) -> Self {
+        Node::new(self.name.clone(), self.value, self.cost)
+    }
+}
+
 
 #[derive(Hash)]
 #[derive(PartialEq)]
@@ -165,6 +171,65 @@ impl Display for Action {
     }
 }
 
+struct Maximizer {
+    state: State,
+    nodes: HashMap<String, Node>,
+    relationships: Relationships,
+    algorithm: Box<dyn CollectionAlgorithm>
+}
+
+trait CollectionAlgorithm{
+    fn name(&self) -> &str;
+    fn collector(&self, maximiser: &Maximizer) -> &Path; // Shall find the optimal path and return it
+    fn should_collect(&self, company_name: String, maximiser: &Maximizer) -> &bool; // Returns true if node on given company name should be collected
+}
+
+struct DepthSearchAlgo {}
+impl CollectionAlgorithm for DepthSearchAlgo {
+    fn name(&self) -> &str {
+        "DepthSearchAlgo.v1"
+    }
+
+    fn collector(&self, maximiser: &Maximizer) -> &Path {
+        todo!()
+    }
+
+    fn should_collect(&self, company_name: String, maximiser: &Maximizer) -> &bool {
+        todo!()
+    }
+}
+
+impl Maximizer {
+    fn new(state: State, nodes: HashMap<String, Node>,
+           relationships: Relationships, algorithm: Box<dyn CollectionAlgorithm>) -> Maximizer {
+        Maximizer {
+            state,
+            nodes,
+            relationships,
+            algorithm,
+        }
+    }
+
+    fn collect(&mut self) {
+        while self.state.time_left >= 0 {
+            self.state.goto(&self.algorithm.collector(&self), &self.nodes);
+
+
+            self.print();
+        }
+    }
+
+    fn print(&self) {
+        println!("{}", &self);
+    }
+}
+
+impl Display for Maximizer {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: Using algorithm {}", self.state, self.algorithm.name())
+    }
+}
+
 impl State {
     fn new() -> State {
         State{
@@ -172,14 +237,14 @@ impl State {
             last_companies: vec![],
             score: 0, time_left: 4500 }
     }
-    
+
     fn goto(&mut self, path_followed: &Path, nodes: &HashMap<String, Node>) {
         let collected_at_current = self.should_collect(&nodes);
 
         self.last_companies.push(
             Action{ company: self.current_company.clone(),
                 collected: collected_at_current });
-        
+
         if collected_at_current {
             let temp_node = nodes.get(&self.current_company).unwrap();
 
@@ -259,18 +324,11 @@ fn main() {
     setup_logger();
     let json = read_json();
     let (nodes, relations) = neo4j_json_to_structures(&json);
-    println!("{}", json);
-    println!("{}", json["nodes"]["company10"]);
-    println!("{}", json["nodes"]["company10"]);
-    println!("{}", nodes["company10"]);
-    println!("{}", relations["company10"]);
-    
-    let mut state = State::new();
-    println!("{}", state);
+    println!("{}", nodes["Nuxxcoin"]);
+    println!("{}", relations["Nuxxcoin"]);
 
-    state.collect(&relations, &nodes);
-
-
+    let mut maximizer = Maximizer::new(State::new(), nodes, relations, Box::new(DepthSearchAlgo {}));
+    maximizer.collect();
 }
 
 
@@ -298,19 +356,26 @@ fn neo4j_json_to_structures(json: &serde_json::Value) -> (HashMap<String, Node>,
                                         temp_node["swag"].as_i64().unwrap(),
                                         temp_node["timePrice"].as_i64().unwrap()));
     }
-
+    println!("{}", resulting_nodes.get("company10").unwrap());
     for (k, v) in relationships.as_object().clone().unwrap() {
         //println!("{}", serde_json::to_string_pretty(v).unwrap());
         //println!("{}", json!(v.as_array().unwrap()[0].as_object().unwrap()));
+
         let temp_rel: Vec<Path> = v.as_array().unwrap().iter()
             .map(|r| r.as_object().unwrap())
-            .map(|r| Path{to: r.get("to")
-                .unwrap().as_str().unwrap().parse().unwrap()
+            .map(|r| Path{to: resulting_nodes.get(r.get("to")
+                .unwrap().as_str().unwrap()).unwrap().name.clone()
                 , cost: r.get("timePrice").unwrap().as_i64().unwrap()
             }).collect();
-        resulting_relationship.insert(k.clone(), Relationship{ paths: temp_rel});
+        resulting_relationship.insert(resulting_nodes.get(k).unwrap().name.clone(), Relationship{ paths: temp_rel});
 
     }
 
-    (resulting_nodes, resulting_relationship)
+
+    let mut resulting_nodes_nice_names: HashMap<String, Node> = HashMap::new();
+    for (_, v) in resulting_nodes {
+        resulting_nodes_nice_names.insert(v.name.clone(), v.clone());
+    }
+
+    (resulting_nodes_nice_names, resulting_relationship)
 }
