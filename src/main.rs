@@ -1,3 +1,17 @@
+mod subnets;
+mod node;
+mod graphs;
+mod path;
+mod state;
+mod action;
+
+use subnets::*;
+use graphs::*;
+use path::*;
+use node::*;
+use action::*;
+use state::*;
+
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Error, Formatter, write};
@@ -8,7 +22,13 @@ use std::fs::{File, read};
 use std::hash::Hasher;
 use std::io;
 use std::io::Read;
+use std::sync::Arc;
 use serde_json::json;
+use tracing_subscriber::fmt::time;
+use rayon::prelude::*;
+
+const TTL_PER_ITERATION: i32 = 4;
+const COLLECT_LIMIT: f64 = 0.75;
 
 fn setup_logger() {
     let subscriber = FmtSubscriber::builder()
@@ -27,150 +47,6 @@ struct Results {
     cost: f64,
 }
 
-struct Node {
-    name: String,
-    value: i64,
-    cost: i64,
-}
-
-impl Display for Node {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Name {} value {} cost {}", self.name, self.value, self.cost)
-    }
-}
-
-impl Node {
-    fn new(name: String, value: i64, cost: i64) -> Node {
-        Node{name, value, cost}
-    }
-
-    fn value_per_cost(&self) -> f64 {
-        (self.value as f64)/(self.cost as f64)
-    }
-}
-
-impl Clone for Node {
-    fn clone(&self) -> Self {
-        Node::new(self.name.clone(), self.value, self.cost)
-    }
-}
-
-
-#[derive(Hash)]
-#[derive(PartialEq)]
-#[derive(Eq)]
-struct Path{
-    to: String,
-    cost: i64
-}
-
-impl Path {
-    fn value_per_cost(&self, nodes: &HashMap<String, Node>) -> f64 {
-        let temp_node = nodes.get(&self.to).unwrap();
-        (temp_node.value as f64) / ((temp_node.cost + self.cost) as f64)
-    }
-
-    fn max_value_per_cost_depth(&self, depth: i64, nodes: &HashMap<String, Node>,
-                                relationships: &Relationships, visited: &HashSet<String>, ttl: u8) -> f64 {
-        let results = self.rec_max_value_per_cost_depth(depth, nodes, relationships,
-                                                        &mut visited.clone(),
-                                                        0.0, 0.0, ttl);
-        results.total/results.cost
-    }
-
-    fn rec_max_value_per_cost_depth(&self, depth: i64, nodes: &HashMap<String, Node>,
-                                    relationships: &Relationships, visited: &mut HashSet<String>,
-                                    total_so_far: f64, divide_by: f64, mut ttl:u8) -> Results {
-
-        let mut vals: Vec<Results> = vec![];
-        let temp_node = nodes.get(&self.to).unwrap();
-
-        if !visited.contains(&self.to) {
-            vals.push(Results{total: temp_node.value as f64,cost: temp_node.cost as f64});
-            visited.insert(self.to.clone());
-        } else {
-            //vals.push(Results{total: 0.0, cost: 10.0}); // BAD
-            ttl-=1;
-        }
-        if depth == 0 || ttl == 0 {
-            Results{ total: total_so_far, cost: divide_by }
-        } else {
-            for rel in relationships.get(&self.to) {
-                for path in rel.paths.iter() {
-                    let mut local_visited = visited.clone();
-                    //local_visited.insert(path.to.clone());
-                    vals.push(path.rec_max_value_per_cost_depth(depth.clone() -1,
-                                                                nodes, relationships,
-                                                                &mut local_visited,
-                                                                total_so_far.clone(),
-                                                                &divide_by + path.cost as f64, ttl.clone()));
-                }
-            }
-
-            let mut tot_sum = 0.0;
-            let mut cost_sum = 0.0;
-            for r in vals {
-                tot_sum += r.total;
-                cost_sum += r.cost
-            }
-            Results{total: tot_sum, cost: cost_sum}
-        }
-    }
-}
-
-impl Display for Path {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "to {} cost {}", self.to, self.cost)
-    }
-}
-
-struct Relationship {
-    paths: Vec<Path>
-}
-
-impl Display for Relationship {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Relations")?;
-        for p in &self.paths {
-            write!(f, " {} |", p)?;
-        }
-        Ok(())
-    }
-}
-
-type Relationships = HashMap<String, Relationship>;
-
-
-struct State {
-    current_company: String,
-    last_companies: Vec<Action>,
-    score: i64,
-    time_left: i64
-}
-
-#[derive(PartialEq)]
-struct  Action {
-    company: String,
-    collected: bool
-}
-
-impl Action {
-    fn new(company: String, collected: bool) -> Action {
-        Action{company, collected}
-    }
-}
-
-impl Display for Action {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if self.collected {
-            write!(f, "({}:{})", self.company, "Collected")?;
-        } else {
-            write!(f, "({})", self.company)?;
-        }
-        Ok(())
-    }
-}
-
 struct Maximizer {
     state: State,
     nodes: HashMap<String, Node>,
@@ -178,24 +54,114 @@ struct Maximizer {
     algorithm: Box<dyn CollectionAlgorithm>
 }
 
+
 trait CollectionAlgorithm{
     fn name(&self) -> &str;
-    fn collector(&self, maximiser: &Maximizer) -> &Path; // Shall find the optimal path and return it
-    fn should_collect(&self, company_name: String, maximiser: &Maximizer) -> &bool; // Returns true if node on given company name should be collected
+    fn path_score(&self, path: &Path, maximiser: &Maximizer) -> f64; // Shall find the optimal path and return it
+    fn should_collect(&self, company_name: &String, maximiser: &Maximizer) -> bool; // Returns true if node on given company name should be collected
+    fn set_current_position(&mut self, current_position: String){}
 }
 
-struct DepthSearchAlgo {}
+struct DepthSearchAlgo {
+    max_depth: i64, // Maximum cost depth!
+    current_real_location: String
+}
+
+impl DepthSearchAlgo {
+    fn new(max_depth: i64, current_real_position: String) -> Self{
+        Self { max_depth: max_depth, current_real_location: current_real_position}
+    }
+
+    fn path_value(&self, path: &Path, maximiser: &Maximizer, visited: &HashSet<String>) -> f64 {
+        if maximiser.collect_here_with_visited(&path.to, visited) {
+            path.value_per_cost(&maximiser.nodes)
+        } else {
+            0.0
+        }
+    }
+
+    fn should_collect_own(&self, state: &State, company_name: &String, maximizer: &Maximizer) -> bool {
+        !state.last_companies.contains(
+            &Action::new(company_name.clone(), true)
+        ) && self.should_collect(company_name, maximizer)
+    }
+
+    fn recursive_collector(&self, maximiser: &Maximizer, depth: i64, state: State, start_time: i64) -> i64 {
+
+        if depth <= (start_time - state.time_left) || state.time_left < 0 || state.ttl <= 0 {
+            state.score
+        } else {
+            // It is not finished recursing:
+
+            let paths = maximiser.paths_from_company(&state.current_company);
+            let score: i64 = paths.iter().map( |path| {
+                if &path.to != &state.current_company {
+                    let mut next_state = state.clone();
+                    next_state.goto(&path, &maximiser.nodes,
+                                    self.should_collect_own(&next_state,
+                                                            &path.to,
+                                                            maximiser));
+                    self.recursive_collector(maximiser,
+                                             depth,
+                                             next_state,
+                                             start_time) as i64
+                } else {
+                    0
+                }
+            }).max().unwrap();
+
+            score
+
+        }
+    }
+}
+
 impl CollectionAlgorithm for DepthSearchAlgo {
     fn name(&self) -> &str {
         "DepthSearchAlgo.v1"
     }
 
-    fn collector(&self, maximiser: &Maximizer) -> &Path {
-        todo!()
+    fn path_score(&self, path: &Path, maximiser: &Maximizer) -> f64 {
+        let mut  state = maximiser.state.clone();
+        state.goto(path, &maximiser.nodes, maximiser.collect_here(&path.to));
+        let time_left = state.time_left.clone();
+        state.ttl = TTL_PER_ITERATION;
+        self.recursive_collector(maximiser, self.max_depth, state, time_left) as f64
     }
 
-    fn should_collect(&self, company_name: String, maximiser: &Maximizer) -> &bool {
-        todo!()
+    fn should_collect(&self, company_name: &String, maximiser: &Maximizer) -> bool {
+        let node = maximiser.nodes.get(company_name).unwrap();
+
+        let collect_worth = node.value_per_cost();
+        // 0.75 gives 4987 at depth 8 same with 0.8 same 0.7, 4976 with 0.9 | 4993 with 0.65, 0.6 much worse (4.4k)
+        collect_worth >= COLLECT_LIMIT
+    }
+
+    fn set_current_position(&mut self, current_position: String) {
+        self.current_real_location = current_position;
+    }
+
+}
+
+struct SimpleSearch {}
+
+impl CollectionAlgorithm for SimpleSearch {
+    fn name(&self) -> &str {
+        "Simple search"
+    }
+
+    fn path_score(&self, path: &Path, maximiser: &Maximizer) -> f64 {
+        if !maximiser.companies_collected_at().contains(&path.to) {
+            path.value_per_cost(&maximiser.nodes)
+        } else {
+            0.0
+        }
+    }
+
+    fn should_collect(&self, company_name: &String, maximiser: &Maximizer) -> bool {
+
+        maximiser.nodes.get(company_name).unwrap().value_per_cost() > 0.75 &&
+            !maximiser.companies_collected_at().contains(company_name)
     }
 }
 
@@ -210,124 +176,119 @@ impl Maximizer {
         }
     }
 
+    fn companies_collected_at(&self) -> HashSet<String> {
+        self.state.last_companies.iter().filter(|a| a.collected).map(|l| l.company.clone()).collect()
+    }
+
+    fn paths_from_company(&self, company: &String) -> Vec<&Path> {
+        self.relationships.get(company).iter().flat_map(|rel| &rel.paths).collect()
+    }
+
     fn collect(&mut self) {
-        while self.state.time_left >= 0 {
-            self.state.goto(&self.algorithm.collector(&self), &self.nodes);
 
+        // ADD STARTING SPOT
 
+        let coll = self.collect_here(&self.state.current_company);
+        self.state.last_companies.push(
+            Action{ company: self.state.current_company.clone(),
+                          collected:  coll});
+        if coll {self.state.force_collect(
+            self.nodes.get(&*self.state.current_company).unwrap())}
+        while self.state.time_left > 0 {
+            //let test = Path{ to: "".to_string(), cost: 0 };
+
+            let max = self.max_score_collect().expect("No valid path exists.");
+            println!("{}", max.to);
+            println!("{}", self.state.current_company);
+
+            assert!(max.to != self.state.current_company, "Cant go to yourself.");
+            self.goto(max.clone());
+            self.algorithm.set_current_position(self.state.current_company.clone());
             self.print();
         }
+    }
+
+    fn goto(&mut self, path: Path) {
+        self.state.goto(
+            &path,
+            &self.nodes,
+            self.collect_here(&path.to));
     }
 
     fn print(&self) {
         println!("{}", &self);
     }
+
+    fn collect_here(&self, company_name: &String) -> bool {
+        !self.state.last_companies.contains(
+            &Action::new(company_name.clone(), true)
+        ) && self.algorithm.should_collect(company_name, &self)
+    }
+
+    fn collect_here_with_other_state(&self, other_state: &State) -> bool {
+        let company_name = &other_state.current_company;
+        !other_state.last_companies.contains(
+            &Action::new(company_name.clone(), true)
+        ) && self.algorithm.should_collect(company_name, &self)
+    }
+
+    fn collect_here_with_visited(&self, company_name: &String, visited: &HashSet<String>) -> bool {
+        (!visited.contains(company_name)) && self.collect_here(company_name)
+    }
+
+
+
+    fn max_score_collect(&self) -> Option<&Path> {
+        let mut best_score = 0.0;
+        let mut best_path: Option<&Path> = None;
+        let mut backup_path: Option<&Path> = None;
+
+        for rel in self.relationships.get(&*self.state.current_company) {
+            for path in &rel.paths {
+                //println!("{}", path);
+                let score = self.algorithm.path_score(path, self);
+                println!("{}: {}", path, score);
+
+                if score > best_score && &path.to != &self.state.current_company{
+                    best_score = score;
+                    best_path = Some(path);
+                }
+                if backup_path.is_none() {
+                    backup_path = Some(path);
+                }
+            }
+        }
+        if best_path.is_none() {
+            best_path = backup_path;
+        }
+        best_path
+    }
+
 }
 
 impl Display for Maximizer {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: Using algorithm {}", self.state, self.algorithm.name())
+        write!(f, "{}: Using algorithm {} | Trip length: {}",
+               self.state, self.algorithm.name(), self.state.last_companies.len())
     }
 }
 
-impl State {
-    fn new() -> State {
-        State{
-            current_company: "company10".to_string(),
-            last_companies: vec![],
-            score: 0, time_left: 4500 }
-    }
-
-    fn goto(&mut self, path_followed: &Path, nodes: &HashMap<String, Node>) {
-        let collected_at_current = self.should_collect(&nodes);
-
-        self.last_companies.push(
-            Action{ company: self.current_company.clone(),
-                collected: collected_at_current });
-
-        if collected_at_current {
-            let temp_node = nodes.get(&self.current_company).unwrap();
-
-            if temp_node.cost + path_followed.cost <= self.time_left{
-                self.score += temp_node.value;
-                self.time_left -= temp_node.cost;
-            }
-        }
-        if self.time_left < path_followed.cost {
-            self.time_left = 0;
-        } else {
-            self.time_left -= path_followed.cost;
-            self.current_company = path_followed.to.clone();
-        }
-
-    }
-
-    fn collect(&mut self, relations: &Relationships, nodes: &HashMap<String, Node>) {
-
-        let hashset_visited: HashSet<String> = self.last_companies.iter().
-            filter(|a| !a.collected).map(|a| a.company.clone()).collect();
-        let mut ttl: u8 = 1;
-        while self.time_left > 0 {
-            let mut max = 0.0;
-            let mut max_index = 0;
-            let mut index = 0;
-
-            let mut last_comp_names: HashSet<&String> = self.last_companies.iter().map(|c| &c.company).collect();
-            //last_comp_names.iter().for_each(|c| print!("{} ", c));
-            for path in &relations[&self.current_company].paths {
-                last_comp_names.insert(&self.current_company);
-                let temp = path.max_value_per_cost_depth(9, &nodes, &relations, &hashset_visited, ttl);
-                println!("{}: {}", path.to, temp);
-
-                if temp > max && !last_comp_names.contains(&path.to){
-                    max = temp;
-                    max_index = index;
-                }
-                index += 1;
-
-            }
-            let best_path = &relations[&self.current_company].paths.get(max_index).unwrap();
-
-            if last_comp_names.contains(&best_path.to) {
-                ttl-=1;
-            }
-            println!("{}",self.current_company == best_path.to );
-
-            self.goto(best_path, &nodes);
-            println!("{}", self);
-        }
-    }
-
-    fn should_collect(&self, nodes: &HashMap<String, Node>) -> bool {
-        let node = nodes.get(&self.current_company).unwrap();
-        let collect_worth = node.value_per_cost();
-        println!("{}", collect_worth);
-        !self.last_companies.contains(
-            &Action::new(self.current_company.clone(), true)
-        ) && collect_worth > 0.70
-    }
-}
-
-impl Display for State {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "\nStart {}\n", self.current_company)?;
-        write!(f, "Score: {}, Time left: {}\n", self.score, self.time_left)?;
-        for act in &self.last_companies {
-            write!(f, "{}-->", act)?;
-        }
-        write!(f, "({}:?)\n", self.current_company)?;
-        Ok(())
-    }
-}
 
 fn main() {
     setup_logger();
     let json = read_json();
     let (nodes, relations) = neo4j_json_to_structures(&json);
-    println!("{}", nodes["Nuxxcoin"]);
-    println!("{}", relations["Nuxxcoin"]);
-
-    let mut maximizer = Maximizer::new(State::new(), nodes, relations, Box::new(DepthSearchAlgo {}));
+    //println!("{}", nodes["Nuxxcoin"]);
+    //println!("{}", relations["Nuxxcoin"]);
+    let state = State::new(TTL_PER_ITERATION);
+    let state_start = (&state.current_company).clone();
+    // Depth of 6 yields best result on this dataset
+    let mut maximizer = Maximizer::new(state,
+                                       nodes,
+                                       relations,
+                                       Box::new(
+                                           DepthSearchAlgo { max_depth: 1000,
+                                               current_real_location: state_start}));
     maximizer.collect();
 }
 
