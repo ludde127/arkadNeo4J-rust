@@ -1,5 +1,6 @@
 use std::fmt::{Display, Formatter};
 
+#[derive(Hash,PartialEq,Eq)]
 pub struct Node {
     pub(crate) name: String,
     pub(crate) value: i64,
