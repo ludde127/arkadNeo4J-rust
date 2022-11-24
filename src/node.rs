@@ -1,4 +1,4 @@
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
 
 #[derive(Hash,PartialEq,Eq)]
 pub struct Node {
@@ -8,6 +8,12 @@ pub struct Node {
 }
 
 impl Display for Node {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Name {} value {} cost {}", self.name, self.value, self.cost)
+    }
+}
+
+impl Debug for Node {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "Name {} value {} cost {}", self.name, self.value, self.cost)
     }

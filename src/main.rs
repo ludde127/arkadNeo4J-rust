@@ -51,7 +51,8 @@ struct Maximizer {
     state: State,
     nodes: HashMap<String, Node>,
     relationships: Relationships,
-    algorithm: Box<dyn CollectionAlgorithm>
+    algorithm: Box<dyn CollectionAlgorithm>,
+    subnets: Subnets<f64>
 }
 
 
@@ -167,12 +168,15 @@ impl CollectionAlgorithm for SimpleSearch {
 
 impl Maximizer {
     fn new(state: State, nodes: HashMap<String, Node>,
-           relationships: Relationships, algorithm: Box<dyn CollectionAlgorithm>) -> Maximizer {
+           relationships: Relationships,
+           algorithm: Box<dyn CollectionAlgorithm>,
+           subnets: Subnets<f64>) -> Maximizer {
         Maximizer {
             state,
             nodes,
             relationships,
             algorithm,
+            subnets
         }
     }
 
@@ -280,6 +284,9 @@ fn main() {
     let (nodes, relations) = neo4j_json_to_structures(&json);
     //println!("{}", nodes["Nuxxcoin"]);
     //println!("{}", relations["Nuxxcoin"]);
+
+    let subnets = subnets::Subnets::new(&relations, &nodes);
+    println!("{}", subnets);
     let state = State::new(TTL_PER_ITERATION);
     let state_start = (&state.current_company).clone();
     // Depth of 6 yields best result on this dataset
@@ -288,7 +295,7 @@ fn main() {
                                        relations,
                                        Box::new(
                                            DepthSearchAlgo { max_depth: 1000,
-                                               current_real_location: state_start}));
+                                               current_real_location: state_start}), subnets);
     maximizer.collect();
 }
 
