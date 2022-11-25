@@ -64,6 +64,25 @@ pub struct Subnets <K> {
 
 
 impl<K> Subnets<K> {
+    pub fn get_subnet_from_node(&self, node: &Node) -> Option<usize> {
+        for (i, subnet) in self.subnets.iter().enumerate() {
+            if subnet.nodes.contains(node) {
+                return Some(i)
+            }
+        }
+        None
+    }
+
+    pub fn neigbours_from_node(&self, node: &Node, relations: &Relationships) -> HashMap<usize, Relationship> {
+        self.neighbours(self.get_subnet(
+            self.get_subnet_from_node(node).expect("Could not get subnet from node."))
+                            .expect("Could not get from index"), relations)
+    }
+
+    pub fn get_subnet(&self, index: usize) -> Option<&Subnet<K>> {
+        self.subnets.get(index)
+    }
+
     pub fn neighbours(&self, subnet: &Subnet<K>, relationships: &Relationships) -> HashMap<usize, Relationship> {
         // Finds the neighbours to a given subnet
         // For each subnet a vector of all the paths to that subnet from current is the values.
