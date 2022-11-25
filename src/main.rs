@@ -12,35 +12,15 @@ use node::*;
 use action::*;
 use state::*;
 
-use std::cmp::max;
 use std::collections::{HashMap, HashSet};
-use std::fmt::{Display, Error, Formatter, write};
-use tracing::{error, info, Level};
-use tracing_subscriber::FmtSubscriber;
+use std::fmt::{Display, Formatter};
 use serde_json;
-use std::fs::{File, read};
-use std::hash::Hasher;
+use std::fs::{File};
 use std::io;
 use std::io::Read;
-use std::sync::Arc;
-use serde_json::json;
-use tracing_subscriber::fmt::time;
-use rayon::prelude::*;
 
 const TTL_PER_ITERATION: i32 = 4;
 const COLLECT_LIMIT: f64 = 0.75;
-
-fn setup_logger() {
-    let subscriber = FmtSubscriber::builder()
-        // all spans/events with a level higher than TRACE (e.g, debug, info, warn, etc.)
-        // will be written to stdout.
-        .with_max_level(Level::TRACE)
-        // completes the builder.
-        .finish();
-
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("setting default subscriber failed");
-}
 
 struct Results {
     total: f64,
@@ -279,14 +259,19 @@ impl Display for Maximizer {
 
 
 fn main() {
-    setup_logger();
     let json = read_json();
     let (nodes, relations) = neo4j_json_to_structures(&json);
     //println!("{}", nodes["Nuxxcoin"]);
     //println!("{}", relations["Nuxxcoin"]);
 
     let subnets = subnets::Subnets::new(&relations, &nodes);
+
     println!("{}", subnets);
+    /**subnets.neighbours(subnets.subnets.get(8).unwrap(),
+                       &relations).iter().
+        for_each(|f| println!("{}", f.0));
+    **/
+
     let state = State::new(TTL_PER_ITERATION);
     let state_start = (&state.current_company).clone();
     // Depth of 6 yields best result on this dataset

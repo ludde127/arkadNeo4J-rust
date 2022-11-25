@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Display, Formatter};
-use std::ptr::write;
-use crate::{Node, Relationships};
+use std::hash::Hash;
+
+use crate::{Node, Relationship, Relationships};
 use crate::Path;
 use crate::graphs;
 
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Hash, PartialEq, Eq)]
 pub struct Subnet <K> {
     pub(crate) nodes: Vec<Node>,
     pub(crate) node_values: Vec<K>
@@ -58,16 +59,19 @@ impl Subnet<f64> {
 
 #[derive(Eq, Hash, PartialEq)]
 pub struct Subnets <K> {
-    subnets: Vec<Subnet<K>>
+    pub(crate) subnets: Vec<Subnet<K>>
 }
 
-impl<K: Clone> Subnets<K> {
-    fn neighbours(&self, subnet: &Subnet<K>, relationships: &Relationships) -> HashMap<Subnet<K>, Vec<Path>> {
+
+impl<K> Subnets<K> {
+    pub fn neighbours(&self, subnet: &Subnet<K>, relationships: &Relationships) -> HashMap<usize, Relationship> {
         // Finds the neighbours to a given subnet
         // For each subnet a vector of all the paths to that subnet from current is the values.
-        let mut neighbours: HashMap<Subnet<K>, Vec<Path>> = HashMap::new();
-        let subnodes: HashSet<&String> = self.subnets.iter().flat_map(|s| &s.nodes).map(|n| &n.name).collect();
-        for sub in &self.subnets {
+        let mut neighbours: HashMap<usize, Relationship> = HashMap::new();
+        let subnets_not_current: Vec<&Subnet<K>> = self.subnets.iter().filter(|n| *n.nodes != subnet.nodes).collect();
+        for (i, sub) in subnets_not_current.iter().enumerate() {
+            let subnodes: HashSet<&String> = sub.nodes.iter().map(|n| &n.name).collect();
+
             let mut found = vec![];
             for node in &subnet.nodes {
                 let rels = &relationships.get(&node.name).unwrap().paths;
@@ -75,13 +79,16 @@ impl<K: Clone> Subnets<K> {
                     if subnodes.contains(&path.to) {
                         found.push(path.clone());
                     }
+
                 }
             }
-            neighbours.insert(sub.clone(), found);
+            if !found.is_empty() {
+                neighbours.insert(i, Relationship{ paths: found });
+            }
 
         }
 
-        Self { subnets: neighbours }
+        neighbours
     }
 }
 /**
@@ -99,8 +106,8 @@ impl <T:Display> Display for Subnets<T> {
 
 impl Display for Subnets<f64> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        for subnet in &self.subnets {
-            write!(f, "ValuePerCost {}: ", subnet.value_per_cost());
+        for (i, subnet) in self.subnets.iter().enumerate() {
+            write!(f, "ValuePerCost {} for group {}: ", subnet.value_per_cost(), i);
             for node in &subnet.nodes {
                 write!(f, "--{}--", &node.name);
             }
@@ -147,7 +154,7 @@ impl Subnets <f64> {
                     temp.push(node.clone());
 
                     for n in &all {
-                        if n != node {
+                        if n != node && !placed.contains(n) {
                             let mut found = 0;
                             for to in relationships.get(&n.name) {
                                 for path in &to.paths { // All paths from current node which was two from start
